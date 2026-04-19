@@ -1,13 +1,3 @@
-"""
-TalentFlow API — Main FastAPI Application
-Routes:
-  GET  /                          → Frontend (index.html)
-  POST /api/v1/pedigree/analyze   → Founder pedigree (schools + companies)
-  POST /api/v1/investor/analyze   → Full investor intelligence
-  POST /api/v1/hr/analyze         → HR / recruiter intelligence
-  GET  /api/v1/health             → Health check
-"""
-
 from __future__ import annotations
 import logging
 import time
@@ -15,10 +5,11 @@ from contextlib import asynccontextmanager
 from typing import Optional
 import os
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer
 
 from config import settings
 from crustdata_client import CrustDataClient, CrustDataError
@@ -43,7 +34,6 @@ from models import (
 from analyzers.pedigree_analyzer import analyze_pedigree
 from analyzers.investor_analyzer import run_investor_analysis
 from analyzers.hr_analyzer import run_hr_analysis
-
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -51,6 +41,26 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+# ── Security: API Key Token ────────────────────────────────────────────────────
+
+# Load API key from environment (e.g., TALENTFLOW_API_KEY=sk_test_abc123)
+TALENTFLOW_API_KEY = os.getenv("TALENTFLOW_API_KEY", "sk_dev_talentflow_default")
+security_scheme = HTTPBearer()
+
+
+async def verify_token(credentials = Depends(security_scheme)) -> str:
+    """Verify Bearer token against configured API key."""
+    token = credentials.credentials
+    if token != TALENTFLOW_API_KEY:
+        logger.warning("❌ Invalid API token attempt")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
 
 
 # ── Shared state (instantiated once at startup) ────────────────────────────────
@@ -165,7 +175,7 @@ async def health():
 # ── Bedrock LLM Test ──────────────────────────────────────────────────────────
 
 @app.post("/api/v1/test/llm", tags=["Meta"], summary="Test Bedrock Claude connection")
-async def test_llm():
+async def test_llm(token: str = Depends(verify_token)):
     """
     Verify Bedrock Claude is reachable and responding.
     Returns model response + latency so you can confirm the integration is live.
@@ -194,7 +204,7 @@ async def test_llm():
 
 
 @app.get("/api/v1/test/crustdata", tags=["Meta"], summary="Test CrustData connection")
-async def test_crustdata():
+async def test_crustdata(token: str = Depends(verify_token)):
     """Verify CrustData API key and connectivity."""
     import time
     t0 = time.monotonic()
@@ -218,7 +228,7 @@ async def test_crustdata():
 
 
 @app.get("/api/v1/autocomplete/titles", tags=["Utilities"])
-async def autocomplete_titles(q: str = "", limit: int = 10):
+async def autocomplete_titles(q: str = "", limit: int = 10, token: str = Depends(verify_token)):
     """Discover valid job title values for person search filters."""
     vals = await state.crustdata.person_search_autocomplete(
         "experience.employment_details.current.title", query=q, limit=limit
@@ -227,7 +237,7 @@ async def autocomplete_titles(q: str = "", limit: int = 10):
 
 
 @app.get("/api/v1/autocomplete/companies", tags=["Utilities"])
-async def autocomplete_companies(q: str = "", limit: int = 10):
+async def autocomplete_companies(q: str = "", limit: int = 10, token: str = Depends(verify_token)):
     """Discover valid company name values for person search filters."""
     vals = await state.crustdata.person_search_autocomplete(
         "experience.employment_details.current.company_name", query=q, limit=limit
@@ -236,7 +246,7 @@ async def autocomplete_companies(q: str = "", limit: int = 10):
 
 
 @app.get("/api/v1/autocomplete/schools", tags=["Utilities"])
-async def autocomplete_schools(q: str = "", limit: int = 10):
+async def autocomplete_schools(q: str = "", limit: int = 10, token: str = Depends(verify_token)):
     """Discover valid school names for person search filters."""
     vals = await state.crustdata.person_search_autocomplete(
         "education.schools.school", query=q, limit=limit
@@ -252,7 +262,7 @@ async def autocomplete_schools(q: str = "", limit: int = 10):
     tags=["Investor"],
     summary="Analyse founder pedigree — schools, previous companies, alumni networks",
 )
-async def pedigree_analyze(req: PedigreeRequest):
+async def pedigree_analyze(req: PedigreeRequest, token: str = Depends(verify_token)):
     """
     Deep-dives into:
     - Founder educational background + school alumni success patterns
@@ -331,7 +341,7 @@ async def pedigree_analyze(req: PedigreeRequest):
     tags=["Investor"],
     summary="Full investor intelligence — talent signals, hiring trends, LLM score",
 )
-async def investor_analyze(req: InvestorAnalysisRequest):
+async def investor_analyze(req: InvestorAnalysisRequest, token: str = Depends(verify_token)):
     """
     Complete investor analysis:
     - Pedigree (founders + alumni)
@@ -372,7 +382,7 @@ async def investor_analyze(req: InvestorAnalysisRequest):
     tags=["HR"],
     summary="HR intelligence — candidate scoring, talent shifts, pool analysis",
 )
-async def hr_analyze(req: HRAnalysisRequest):
+async def hr_analyze(req: HRAnalysisRequest, token: str = Depends(verify_token)):
     """
     HR / Recruiter analysis:
     - Score candidates against JD (structured or free-text resume)
@@ -430,7 +440,7 @@ async def hr_analyze(req: HRAnalysisRequest):
     tags=["Jobs"],
     summary="Search active job listings — hiring velocity, category breakdown, top titles",
 )
-async def jobs_search(req: JobSearchRequest):
+async def jobs_search(req: JobSearchRequest, token: str = Depends(verify_token)):
     """
     Search job listings via POST /job/search.
 
@@ -535,6 +545,7 @@ async def jobs_search(req: JobSearchRequest):
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _rebuild_founders(raw_list: list[dict]) -> list[FounderProfile]:
+    # ...existing code...
     out = []
     for f in raw_list:
         try:
