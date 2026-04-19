@@ -180,10 +180,14 @@ async def get_company_leaders(client: CrustDataClient, company: dict, max_founde
         logger.debug("[Company] Stage-1 raw_people count: %d", len(raw_people))
         logger.debug("[Company] Stage-1 first person sample: %s", str(raw_people[0])[:200] if raw_people else "empty")
         normalized = [_normalize_person_from_company_people(p) for p in raw_people]
-        logger.debug("[Company] Stage-1 normalized founders: %s", 
+        logger.debug("[Company] Stage-1 normalized founders BEFORE dedup: %s", 
                     [{"name": n.get("name"), "title": n.get("title")} for n in normalized])
         leaders = _deduplicate_people(normalized)
-        logger.info("[Company] Stage-1 company.people: %d leaders for '%s'", len(leaders), company_name)
+        logger.debug("[Company] Stage-1 normalized founders AFTER dedup: %s", 
+                    [{"name": n.get("name"), "title": n.get("title")} for n in leaders])
+        # Filter out "Unknown" founders
+        leaders = [l for l in leaders if l.get("name", "").lower() != "unknown"]
+        logger.info("[Company] Stage-1 company.people: %d unique leaders for '%s'", len(leaders), company_name)
         if leaders:
             return leaders[:max_founders]
 
@@ -194,8 +198,10 @@ async def get_company_leaders(client: CrustDataClient, company: dict, max_founde
             raw = _extract_list(data, keys=["decision_makers", "results", "profiles", "people"])
             if raw:
                 leaders = _deduplicate_people(raw)
+                leaders = [l for l in leaders if l.get("name", "").lower() != "unknown"]
                 logger.info("[Company] Stage-2 decision_makers: %d found", len(leaders))
-                return leaders[:max_founders]
+                if leaders:
+                    return leaders[:max_founders]
         except CrustDataError as e:
             logger.warning("[Company] Stage-2 failed: %s", e)
 
@@ -565,22 +571,32 @@ def _deduplicate_people(people: list[dict]) -> list[dict]:
     """
     Deduplicate a list of person dicts by person_id → linkedin_url → name.
     Preserves first occurrence order.
+    Filters out "Unknown" names to avoid duplicate unknowns.
     """
     seen: set[str] = set()
     result: list[dict] = []
     for p in people:
         if not isinstance(p, dict):
             continue
+        
+        # Skip "Unknown" names entirely
+        name = p.get("name", "").strip()
+        if name.lower() in ("unknown", ""):
+            logger.debug("[Company] Skipping person with unknown name")
+            continue
+            
         key = (
             str(p.get("person_id") or "")
             or (p.get("linkedin_url") or "").lower().rstrip("/")
-            or (p.get("name") or "unknown").lower().strip()
+            or name.lower().strip()
         )
-        if key and key not in seen and key != "unknown":
+        if key and key not in seen:
             seen.add(key)
             result.append(p)
-        elif key == "unknown" or not key:
-            result.append(p)  # keep unknowns without dedup
+            logger.debug("[Company] Added founder: %s (key=%s)", name, key[:30])
+        else:
+            logger.debug("[Company] Skipped duplicate: %s (key=%s)", name, key[:30] if key else "none")
+    
     return result
 
 

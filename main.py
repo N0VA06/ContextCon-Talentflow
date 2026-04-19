@@ -635,6 +635,10 @@ async def _quick_pedigree_score(
     )
     prompt = f"""
 Score this founding team for investment potential based ONLY on pedigree signals.
+IMPORTANT: Do NOT penalize first-time founders. Value technical depth, domain expertise, 
+and execution at scale (IC roles, shipping products) equally with prior CEO experience.
+First-time founders with strong signals can score HIGH.
+
 Return ONLY this JSON:
 {{
   "score": <0-100>,
@@ -650,6 +654,29 @@ Return ONLY this JSON:
   "key_reasons": ["<reason1>", "<reason2>"],
   "risks": ["<risk1>"]
 }}
+
+SCORING GUIDELINES:
+- founder_strength (0-100): Assess team composition, complementary skills, shipping track record
+  * Strong technical founder (70-85): domain expertise + shipping products + IC leadership
+  * Strong operational founder (65-80): scaled teams, handled complexity, execution velocity
+  * First-time founders are OK (no penalty) if they demonstrate: technical depth, domain expertise, shipping
+  * Weak signal: completely unproven with no shipping/domain expertise
+  
+- talent_quality (0-100): Assess individual depth and domain expertise
+  * Deep domain expertise (70-85): 5+ years in relevant domain, proven knowledge
+  * Technical strength from top company (70-80): ex-FAANG/top startup as IC or lead
+  * Execution track record (65-80): built and shipped at scale, handled hard problems
+  * YC acceptance or major accelerator validation (add 15-20)
+  
+- hiring_signals: Always 50 (estimate, no data available)
+- market_alignment: Always 50 (estimate, no data available)
+- external_sentiment: Always 50 (estimate, no data available)
+
+AVOID these mistakes:
+- Do NOT penalize lack of prior CEO experience (many great founders are first-time founders)
+- Do NOT give extra points just for CEO title without demonstrated execution
+- DO value technical IC roles, shipping products, domain expertise highly
+- DO consider team composition: complementary skills matter
 
 Pedigree bundle:
 {bundle}

@@ -115,30 +115,144 @@ async def enrich_people_batch(
 ) -> list[dict]:
     """
     Batch enrich up to 25 people at once using their LinkedIn URLs.
-    Falls back to individual enrichment for those without URLs.
+    THEN: Perform secondary name-based search on ALL founders to get complete profile data.
+    This ensures we get both /person/enrich data AND /person/search data for richness.
     """
     url_people = [(i, p) for i, p in enumerate(people) if _get_linkedin_url(p)]
     no_url_people = [(i, p) for i, p in enumerate(people) if not _get_linkedin_url(p)]
 
     results: list[dict] = [_normalize_person_minimal(p) for p in people]
+    
+    logger.info("[Person] enrich_people_batch: %d with URL, %d without", len(url_people), len(no_url_people))
 
-    # Batch enrich those with URLs (max 25 per call)
+    # STAGE 1: Batch enrich those with URLs (max 25 per call)
     for batch_start in range(0, len(url_people), 25):
         batch = url_people[batch_start:batch_start + 25]
         urls = [_get_linkedin_url(p) for _, p in batch]
+        logger.debug("[Person] Batch enriching %d people: %s", len(urls), [u[:40] for u in urls if u])
         try:
             raw_list = await client.person_enrich_by_urls(urls)
+            logger.debug("[Person] Got response with %d entries", len(raw_list) if isinstance(raw_list, list) else 1)
+            
             for idx, (orig_idx, person) in enumerate(batch):
                 url = urls[idx]
+                logger.debug("[Person] Processing person %d/%d (orig_idx=%d): %s", 
+                            idx+1, len(batch), orig_idx, url[:50] if url else "no-url")
                 person_data = _extract_person_data_from_enrich(raw_list, url)
                 if person_data:
+                    old_name = results[orig_idx].get("name", "unknown")
                     results[orig_idx] = _normalize_person_from_enrich(
                         person_data, results[orig_idx]
                     )
+                    new_name = results[orig_idx].get("name", "unknown")
+                    logger.info("[Person] Enriched person at idx %d: %s → %s (URL-based)", orig_idx, old_name, new_name)
+                else:
+                    logger.warning("[Person] No person_data found for idx %d: %s", orig_idx, url[:50] if url else "no-url")
         except CrustDataError as e:
             logger.warning("Batch person enrich failed: %s", e)
 
+    # STAGE 2: Secondary enrichment by name search for ALL people (to get complete data)
+    # This uses /person/search with exact name match to get full profile data
+    logger.info("[Person] Starting secondary name-based search for all %d founders", len(people))
+    for orig_idx, person in enumerate(people):
+        name = person.get("name") or results[orig_idx].get("name")
+        if name and name.lower() not in ("unknown", ""):
+            logger.debug("[Person] Name-based search for founder: %s (idx=%d)", name, orig_idx)
+            enriched_by_name = await enrich_person_by_name(client, name)
+            if enriched_by_name:
+                # Merge: prefer data from name search, fall back to URL enrich
+                old_result = dict(results[orig_idx])
+                merged = _merge_person_data(old_result, enriched_by_name)
+                results[orig_idx] = merged
+                logger.info("[Person] Enhanced person at idx %d via name search: %s", orig_idx, name)
+            else:
+                logger.debug("[Person] Name search returned no results for: %s", name)
+
     return results
+
+
+async def enrich_person_by_name(client: CrustDataClient, name: str) -> Optional[dict]:
+    """
+    Search for a person by exact name match using /person/search.
+    This is useful for founders without LinkedIn URLs or to get fresh data.
+    
+    Example curl:
+    curl --request POST \\
+      --url https://api.crustdata.com/person/search \\
+      --header 'authorization: Bearer <KEY>' \\
+      --header 'content-type: application/json' \\
+      --header 'x-api-version: 2025-11-01' \\
+      --data '{
+        "filters": {
+          "field": "basic_profile.name",
+          "type": "=",
+          "value": "Abhilash Chowdhary"
+        },
+        "limit": 1
+      }'
+    """
+    if not name or name.lower() in ("unknown", ""):
+        return None
+    
+    try:
+        logger.debug("[Person] Searching by name: %s", name)
+        # Use /person/search with exact name match
+        raw = await client.person_search(
+            filters={
+                "field": "basic_profile.name",
+                "type": "=",
+                "value": name,
+            },
+            limit=1,
+        )
+        
+        profiles = _extract_profiles(raw)
+        if profiles:
+            best_profile = profiles[0]
+            logger.info("[Person] Found person by name search: %s", name)
+            return _normalize_person_from_search(best_profile)
+        else:
+            logger.debug("[Person] No results for name search: %s", name)
+            return None
+    except CrustDataError as e:
+        logger.warning("[Person] Name search failed for '%s': %s", name, e)
+        return None
+
+
+def _merge_person_data(url_enriched: dict, name_searched: dict) -> dict:
+    """
+    Merge person data from two sources:
+    - url_enriched: data from /person/enrich (deep nested structure)
+    - name_searched: data from /person/search (normalized structure)
+    
+    Preference: Take name_searched data as primary (it's typically more complete),
+    fall back to url_enriched for missing fields.
+    """
+    if not url_enriched and not name_searched:
+        return {}
+    
+    if name_searched and not url_enriched:
+        return name_searched
+    
+    if url_enriched and not name_searched:
+        return url_enriched
+    
+    # Merge: name_searched takes priority for completeness
+    merged = dict(url_enriched)
+    
+    # Override with name_searched data for key fields
+    for key in ("name", "title", "headline", "location", "linkedin_url", 
+                "education", "work_history", "skills"):
+        if key in name_searched and name_searched[key]:
+            merged[key] = name_searched[key]
+    
+    # Ensure all name_searched fields are present
+    for key, val in name_searched.items():
+        if key not in merged or not merged[key]:
+            merged[key] = val
+    
+    logger.debug("[Person] Merged person data: %s", merged.get("name", "unknown"))
+    return merged
 
 
 async def search_leaders_at_company(
@@ -159,6 +273,59 @@ async def search_leaders_at_company(
     except CrustDataError as e:
         logger.warning("search_leaders_at_company '%s' failed: %s", company_name, e)
         return []
+
+
+async def search_talent_at_company(
+    client: CrustDataClient, 
+    company_name: str, 
+    title_keywords: Optional[list[str]] = None,
+    limit: int = 20
+) -> list[dict]:
+    """
+    Search for ANY talent currently at a company (not just founders).
+    Used for talent pool mining in HR analysis.
+    
+    Args:
+      company_name: Company to search at (e.g., "Google", "Meta")
+      title_keywords: Optional job titles to filter by (e.g., ["Product Manager", "Engineer"])
+      limit: Max results to return
+    
+    Returns:
+      List of normalized person dicts with current roles at the company
+    
+    Example: Search for Product Managers at Google
+      talent = await search_talent_at_company(client, "Google", ["Product Manager"])
+    """
+    if not company_name:
+        return []
+    
+    try:
+        logger.info("[Person] Searching talent at '%s' with keywords: %s (limit=%d)", 
+                    company_name, title_keywords, limit)
+        
+        # Build flexible title regex from keywords if provided
+        if title_keywords and len(title_keywords) > 0:
+            # Create regex that matches any of the keywords
+            title_regex = "|".join(title_keywords)
+        else:
+            # No filter — search ALL current employees (very broad)
+            title_regex = ".*"  # Match any title
+        
+        raw = await client.person_search_current_company(
+            company_name, title_regex=title_regex, limit=limit
+        )
+        profiles = _extract_profiles(raw)
+        logger.info("[Person] Found %d talent at '%s'", len(profiles), company_name)
+        
+        if len(profiles) == 0:
+            logger.warning("[Person] No results for company='%s', title_regex='%s'", 
+                          company_name, title_regex)
+        
+        return [_normalize_person_from_search(p) for p in profiles]
+    except CrustDataError as e:
+        logger.warning("[Person] search_talent_at_company '%s' failed: %s", company_name, e)
+        return []
+
 
 
 async def search_alumni(
@@ -230,20 +397,42 @@ def _extract_person_data_from_enrich(raw: Any, identifier: str) -> Optional[dict
     """
     Extract the best person_data from /person/enrich response.
     Response: [{matched_on, match_type, matches:[{confidence_score, person_data}]}]
+    
+    CRITICAL FIX: Match by identifier (LinkedIn URL or email) to ensure we get the RIGHT person,
+    not just the first best match from all entries.
     """
     if not isinstance(raw, list):
         raw = [raw] if isinstance(raw, dict) else []
 
+    logger.debug("[Person] _extract_person_data_from_enrich: looking for identifier=%s in %d entries", 
+                 identifier[:50] if identifier else "none", len(raw))
+
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        matches = entry.get("matches") or []
-        if matches:
-            # Sort by confidence and take best
-            best = max(matches, key=lambda m: m.get("confidence_score", 0) if isinstance(m, dict) else 0)
-            pd = best.get("person_data") if isinstance(best, dict) else None
-            if isinstance(pd, dict):
-                return pd
+        
+        # Check if this entry matches our identifier (matched_on field)
+        matched_on = entry.get("matched_on", "").lower()
+        identifier_lower = (identifier or "").lower()
+        
+        # Compare by URL (remove trailing /)
+        url_match = (
+            matched_on.rstrip("/") == identifier_lower.rstrip("/") 
+            or identifier_lower in matched_on
+            or matched_on in identifier_lower
+        )
+        
+        if url_match or not identifier:  # If no identifier, take first
+            matches = entry.get("matches") or []
+            if matches:
+                # Sort by confidence and take best
+                best = max(matches, key=lambda m: m.get("confidence_score", 0) if isinstance(m, dict) else 0)
+                pd = best.get("person_data") if isinstance(best, dict) else None
+                if isinstance(pd, dict):
+                    logger.debug("[Person] Found matching person for %s", identifier[:50] if identifier else "unknown")
+                    return pd
+    
+    logger.debug("[Person] No matching person found for identifier=%s", identifier[:50] if identifier else "none")
     return None
 
 

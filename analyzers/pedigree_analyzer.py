@@ -43,6 +43,7 @@ ALWAYS respond with valid JSON only — no markdown fences, no prose, no preambl
 FOUNDER_SCORE_PROMPT = """
 Score this founder across five quality dimensions based on the signal bundle below.
 Be analytical, not descriptive. Reference specific signals as evidence.
+DO NOT penalize first-time founders or those without prior CEO experience.
 Return ONLY this JSON — every field is required:
 
 {{
@@ -67,16 +68,52 @@ Return ONLY this JSON — every field is required:
 }}
 
 SCORING GUIDE (be rigorous, default 50 if data is absent):
-- technical_depth (0-100): Engineering degree from strong school, OSS contributions,
-  technical patents, CTO/VP Eng role, depth of technical work history
-- execution (0-100): Previous companies built + shipped, exits (IPO/acquisition counts
-  more), fundraising milestones achieved, team scale managed
-- network_strength (0-100): Tier-1 school alumni network, ex-FAANG/top startup network,
-  notable investors/board members, number of LinkedIn connections
-- market_understanding (0-100): Domain expertise years, customer-facing roles,
-  evidence of pivots handled well, published market analysis
-- public_signal_strength (0-100): LinkedIn follower count, articles/talks published,
-  open source repos, podcast appearances, Twitter/X presence
+IMPORTANT: Do NOT penalize first-time founders. First-time founders can score high if they have
+strong technical depth, domain expertise, or demonstrated execution at scale in IC roles.
+
+- technical_depth (0-100): 
+  * IC/Senior/Staff Engineer roles at top companies (70-90)
+  * Engineering degree from strong school (add 10-15)
+  * OSS contributions or technical publications (add 5-10)
+  * CTO/VP Eng experience (add 5, but not required)
+  * Domain expertise in relevant area (e.g., robotics, payments, ML) (70-85)
+  * Shipping shipped products, built systems from scratch (70+)
+  * First-time founders WITHOUT prior IC roles: look for self-taught, independent projects, hackathons
+  
+- execution (0-100):
+  * Built/shipped products at scale (70-85)
+  * Led teams of 5+ people (60-75)
+  * Scaled systems (infrastructure, product, business) (70-85)
+  * Handled hard problems with limited resources (65-80)
+  * Prior exits/acquisitions (add 10-15)
+  * Prior successful fundraising rounds (add 5-10)
+  * Prior CEO/founder experience (add 10, but NOT required)
+  * First-time founders: score on demonstrated project ownership, shipping velocity, problem-solving
+  
+- network_strength (0-100): 
+  * Tier-1 school alumni (add 15-20)
+  * Ex-FAANG/top startup experience (60-75)
+  * YC acceptance or top accelerator (add 20)
+  * Notable investor relationships (add 10-15)
+  * LinkedIn connections 5000+ (add 5-10)
+  * Industry visibility/reputation (60-80)
+  
+- market_understanding (0-100):
+  * 3+ years domain expertise in relevant area (70-85)
+  * Customer-facing roles (sales, PM, partnerships) (60-75)
+  * Evidence of market validation or customer discovery (65-80)
+  * Published insights/thought leadership (add 10-15)
+  * Evidence of pivoting intelligently based on market signals (65-75)
+  * Technical depth in niche domain counts as market understanding (60-75)
+  
+- public_signal_strength (0-100):
+  * LinkedIn followers 1000+ (60-75)
+  * Published articles/talks on relevant topics (add 10-15)
+  * Open source projects with traction (add 10-20)
+  * Podcast appearances or media mentions (add 5-10)
+  * Twitter/X presence with engaged followers (add 5-15)
+  * Academic publications or research (add 10-15)
+  * Data gaps are OK — default 50 if unknown
 
 Founder Signal Bundle:
 {signal_bundle}

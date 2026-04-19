@@ -179,10 +179,31 @@ async def run_hr_analysis(
     # ── Step 2: Mine talent pool from target company if no candidates ─────────
     if target_company and not candidate_dicts:
         try:
-            from services.person_service import search_leaders_at_company
-            pool = await search_leaders_at_company(client, target_company, limit=10)
+            from services.person_service import search_talent_at_company
+            
+            # Extract title keywords from JD if available
+            title_keywords = []
+            if jd_structured and isinstance(jd_structured, dict):
+                title_keywords = jd_structured.get("title")
+                if isinstance(title_keywords, str):
+                    title_keywords = [title_keywords]  # Convert single string to list
+                elif not isinstance(title_keywords, list):
+                    title_keywords = []
+            
+            logger.info("[HR] Mining talent from '%s' with title keywords: %s", target_company, title_keywords)
+            
+            # Use broader search for talent pool (not just founders)
+            pool = await search_talent_at_company(
+                client, 
+                target_company, 
+                title_keywords=title_keywords if title_keywords else None,
+                limit=4
+            )
             candidate_dicts = pool
             logger.info("[HR] Mined %d candidates from %s", len(pool), target_company)
+            
+            if len(pool) == 0:
+                logger.warning("[HR] No talent found at '%s'. Try different title keywords or check company name.", target_company)
         except Exception as e:
             logger.warning("[HR] Could not mine pool from %s: %s", target_company, e)
 
